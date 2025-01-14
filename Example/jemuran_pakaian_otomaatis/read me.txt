@@ -1,7 +1,0 @@
-AccelStepper-1.59.rar / library untuk motor stepper
-
-rangkaian.JPG / gambar rangkaian/skema 
-
-skema rangkaian jemuran pakaian otomatis.fzz / file rangkaian aplikasi fritzing
-
-source code jemuran_pakaian_otomaatis.ino / source code arduino

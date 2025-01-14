@@ -1,0 +1,122 @@
+#include <Arduino.h>
+#include <EEPROM.h>
+#include <AccelStepper.h>
+#include "Library/LibAir/rain.h"
+#include "Library/LibCahaya/cahaya.h"
+
+#define LED 4
+#define IN1 19
+#define IN2 18
+#define IN3 5
+#define IN4 17
+#define SENSOR_PIN_RAIN 34
+#define SENSOR_PIN_LIGHT 35
+
+#define DELAY 500
+#define MotorInterfaceType 4
+
+Rain sensorair(SENSOR_PIN_RAIN);
+Cahaya sensorcahaya(SENSOR_PIN_LIGHT);
+AccelStepper stepper = AccelStepper(MotorInterfaceType, IN1, IN3, IN2, IN4);
+const int bawah = 0;
+const int atas = 512; // Perbesar nilai untuk rotasi lebih banyak
+                      // Contoh: 2048 untuk rotasi penuh
+                      // 4096 untuk 2 rotasi penuh
+bool goingUp = true;
+bool isMoving = false;
+
+void safePinWrite(uint8_t pin, uint8_t val)
+{
+    if (pin < NUM_DIGITAL_PINS)
+    {
+        digitalWrite(pin, val);
+    }
+}
+
+void savePositionToEEPROM(int position)
+{
+    EEPROM.put(0, position);
+    EEPROM.commit();
+}
+
+int readPositionFromEEPROM()
+{
+    int position;
+    EEPROM.get(0, position);
+    return position;
+}
+
+void setup()
+{
+    Serial.begin(115200);
+    analogSetAttenuation(ADC_11db);
+    EEPROM.begin(512);
+    
+    
+    // stepper.setSpeed(600);
+    stepper.setMaxSpeed(500);    // Nilai lebih besar = lebih cepat (steps/detik)
+    stepper.setAcceleration(200); // Nilai lebih besar = akselerasi lebih cepat
+                                  // Rumus setAcceleration 1 putaran penuh (360°) = 2048 steps
+                                  // Maka untuk 45° = (2048 / 360) × 45 = 256 steps
+    pinMode(LED, OUTPUT);
+    pinMode(SENSOR_PIN_RAIN, INPUT);
+    pinMode(SENSOR_PIN_LIGHT, INPUT);
+    safePinWrite(LED, 0);
+
+    int lastPosition = readPositionFromEEPROM();
+    stepper.setCurrentPosition(lastPosition);
+}
+void moveToPosition(int target)
+{
+    stepper.moveTo(target);
+    while (stepper.distanceToGo() != 0)
+    {
+        stepper.run();
+    }
+    savePositionToEEPROM(stepper.currentPosition());
+}
+void loop()
+{
+
+    if (!isMoving)
+    {
+        if (goingUp)
+        {
+            Serial.println("Bergerak ke atas");
+            stepper.moveTo(atas);
+            isMoving = true;
+        }
+        else
+        {
+            Serial.println("Bergerak ke bawah");
+            stepper.moveTo(bawah);
+            isMoving = true;
+        }
+    }
+
+    if (isMoving)
+    {
+        stepper.run();
+
+        if (stepper.distanceToGo() == 0)
+        {
+            isMoving = false;
+            goingUp = !goingUp;
+
+            Serial.print("Sampai di posisi: ");
+            Serial.println(stepper.currentPosition());
+            savePositionToEEPROM(stepper.currentPosition());
+
+            delay(1000);
+        }
+    }
+
+    // int data_air = sensorair.readSensor();
+    // int data_cahaya = sensorcahaya.readSensor();
+    // data_air = data_air >> 1;
+    // data_cahaya = data_cahaya >> 1;
+
+    // Serial.println("Air " + String(data_air) + " Cahaya " + String(data_cahaya));
+
+    // delay(DELAY);
+}

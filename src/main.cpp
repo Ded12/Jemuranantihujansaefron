@@ -1,7 +1,7 @@
+
 #include <Arduino.h>
 #include <ESP32Servo.h>
 #include <UniversalTelegramBot.h>
-
 #include <ArduinoJson.h>
 #include "Library/LibAir/rain.h"
 #include "Library/LibCahaya/cahaya.h"
@@ -17,22 +17,21 @@
 #define MotorInterfaceType 4
 #define BOTtoken "7249977403:AAFQDmS6vXFLegRJCoWI_8CCTErSshG44vE"
 #define CHAT_ID "6868155856"
-const String CLIENT_NAME = "DedeLabs";
 
 Rain sensorair(SENSOR_PIN_RAIN);
 Cahaya sensorcahaya(SENSOR_PIN_LIGHT);
 Servo servo;
-int lastAngle = 90;
-int currentAngle = 90;
-int targetAngle = 90;
+int lastAngle = 0;
+int currentAngle = 0;
+int targetAngle = 0;
 const int STEP_DELAY = 50;
-const int ANGLE_STEP = 2;
+const int ANGLE_STEP = 4;
 unsigned long lastTimeBotRan = 0;
 
-bool notifhujan = false;   // Status pengiriman pesan hujan
-bool notifpanas = false;   // Status pengiriman pesan panas
-bool notifmendung = false; // Status pengiriman pesan mendung
-bool helloMessageSent = false; // Status pengiriman pesan Sayhai
+bool notifhujan = false;
+bool notifpanas = false;
+bool notifmendung = false;
+bool helloMessageSent = false;
 const char *ssid = "DLabs";
 const char *password = "baliteam88";
 
@@ -47,7 +46,7 @@ void safePinWrite(uint8_t pin, uint8_t val)
     }
 }
 // Fungsi keanggotaan untuk sensor cahaya
-float keanggotaanCahay(int value)
+float keanggotaanCahaya(int value)
 {
     // Gelap: 0-255, Terang: 255-511
     if (value <= 0)
@@ -60,7 +59,7 @@ float keanggotaanCahay(int value)
 // Fungsi keanggotaan untuk sensor hujan
 float keanggotaanAir(int value)
 {
-    // Kering: 0-480, Basah: 480-960
+    // ringan: 0-480, Basah: 480-960
     if (value <= 0)
         return 0;
     if (value >= 960)
@@ -90,7 +89,7 @@ void moveServoSmoothly(int newAngle)
 int getServoAngle(float light, float rain)
 {
     // Fuzzifikasi
-    float CahayaTerang = keanggotaanCahay(light);
+    float CahayaTerang = keanggotaanCahaya(light);
     float CahayaGelap = 1 - CahayaTerang;
     float Hujan = keanggotaanAir(rain);
     float TidakHujan = 1 - Hujan;
@@ -100,31 +99,31 @@ int getServoAngle(float light, float rain)
     // Rule 3: IF Cahaya Terang AND Hujan THEN Tunggu
     // Rule 4: IF Cahaya Gelap AND TidakHujan THEN Pertahankan posisi terakhir
 
-    // Jika hujan, pindah ke 0°
+    // Jika hujan, pindah ke 90°
     if (Hujan > 0.5)
     {
-        lastAngle = 0;
+        lastAngle = 90;
         if (!notifhujan)
         {
-            bot.sendMessage(CHAT_ID, "Hujan Bro, Jemuran akan di angkat..!", "");
+            bot.sendMessage(CHAT_ID, "Cuaca Hujan, Jemuran akan di angkat..!", "");
             notifhujan = true;
             notifpanas = false;
         }
-        return 0;
+        return 90;
     }
 
     // Jika cahaya terang dan tidak hujan, pindah ke 90°
     if (CahayaTerang > 0.5 && TidakHujan > 0.5)
     {
-        lastAngle = 90;
+        lastAngle = 0;
 
         if (!notifpanas)
         {
-            bot.sendMessage(CHAT_ID, "Panas Bro, Jemur lagi ya..!", "");
+            bot.sendMessage(CHAT_ID, "Cuaca Panas, Jemur lagi ya..!", "");
             notifpanas = true;
             notifhujan = false;
         }
-        return 90;
+        return 0;
     }
 
     // Jika tidak hujan tapi cahaya gelap, pertahankan posisi terakhir
@@ -133,7 +132,7 @@ int getServoAngle(float light, float rain)
         if (!notifmendung)
         {
 
-            bot.sendMessage(CHAT_ID, "Mendung bro, Apa mau di angkat jemurannya ..?", "");
+            bot.sendMessage(CHAT_ID, "Cuaca mendung, Apa mau di angkat jemurannya ..?", "");
             notifmendung = true;
             notifpanas = false;
             notifhujan = false;
@@ -150,7 +149,7 @@ void handleTelegramMessages()
     int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
     while (numNewMessages)
     {
-        Serial.println("Pesan baru diterima dari Telegram.");
+        
         for (int i = 0; i < numNewMessages; i++)
         {
             String chat_id = String(bot.messages[i].chat_id);
@@ -159,8 +158,8 @@ void handleTelegramMessages()
             {
                 if (text == "angkat")
                 {
-                    lastAngle = 0;
-                    bot.sendMessage(CHAT_ID, "Jemuran Sudah di angkat bro ...!", "");
+                    lastAngle = 90;
+                    bot.sendMessage(CHAT_ID, "Ok, Jemuran Sudah di angkat...!", "");
                 }
                
             }
@@ -187,7 +186,7 @@ void setup()
     ESP32PWM::allocateTimer(1);
     ESP32PWM::allocateTimer(2);
     ESP32PWM::allocateTimer(3);
-    servo.write(0);
+    servo.write(90);
 
     // Attempt to connect to Wifi network:
     Serial.print("Connecting Wifi: ");
@@ -208,7 +207,7 @@ void setup()
     Serial.println(WiFi.localIP());
     if (!helloMessageSent)
     {
-        bot.sendMessage(CHAT_ID, "Hallo Bro", "");
+        bot.sendMessage(CHAT_ID, "Hallo I'M Rain Assistant 😊", "");
         helloMessageSent = true;
     }
 }
@@ -233,7 +232,5 @@ void loop()
         handleTelegramMessages();
         lastTimeBotRan = millis();
     }
-
-    // Tambahkan delay sesuai kebutuhan
     delay(100);
 }

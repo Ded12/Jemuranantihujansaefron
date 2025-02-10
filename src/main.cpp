@@ -1,236 +1,291 @@
-
 #include <Arduino.h>
 #include <ESP32Servo.h>
 #include <UniversalTelegramBot.h>
 #include <ArduinoJson.h>
-#include "Library/LibAir/rain.h"
-#include "Library/LibCahaya/cahaya.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
-#define LED 4
+// Pin sensor
 #define SERVO_PIN 14
-#define SENSOR_PIN_RAIN 34
-#define SENSOR_PIN_LIGHT 35
+#define SENSOR_HUJAN 34
+#define SENSOR_CAHAYA 35
 
-#define DELAY 50
-#define MotorInterfaceType 4
+const char *ssid = "DLabs";
+const char *password = "baliteam88";
+
+// Telegram Credentials
 #define BOTtoken "7249977403:AAFQDmS6vXFLegRJCoWI_8CCTErSshG44vE"
 #define CHAT_ID "6868155856"
 
-Rain sensorair(SENSOR_PIN_RAIN);
-Cahaya sensorcahaya(SENSOR_PIN_LIGHT);
+float nilaiHujan;
+float nilaiCahaya;
 Servo servo;
-int lastAngle = 0;
+
+int lastAngle = 90;
 int currentAngle = 0;
 int targetAngle = 0;
-const int STEP_DELAY = 50;
-const int ANGLE_STEP = 4;
-unsigned long lastTimeBotRan = 0;
 
 bool notifhujan = false;
 bool notifpanas = false;
 bool notifmendung = false;
 bool helloMessageSent = false;
-const char *ssid = "DLabs";
-const char *password = "baliteam88";
+bool waitForCommand = false; // Added missing semicolon
+unsigned long lastTimeBotRan = 0;
+const unsigned long BOT_CHECK_INTERVAL = 1000; // Added constant for bot check interval
 
 WiFiClientSecure client;
 UniversalTelegramBot bot(BOTtoken, client);
 
-void safePinWrite(uint8_t pin, uint8_t val)
+// Error handling function
+void handleError(const char *errorMessage)
 {
-    if (pin < NUM_DIGITAL_PINS)
-    {
-        digitalWrite(pin, val);
-    }
-}
-// Fungsi keanggotaan untuk sensor cahaya
-float keanggotaanCahaya(int value)
-{
-    // Gelap: 0-255, Terang: 255-511
-    if (value <= 0)
-        return 0;
-    if (value >= 511)
-        return 1;
-    return value / 511.0;
+  Serial.println(errorMessage);
+  // Add any additional error handling here
 }
 
-// Fungsi keanggotaan untuk sensor hujan
-float keanggotaanAir(int value)
+// Fungsi membership untuk hujan ringan
+float hujanRingan(float x)
 {
-    // ringan: 0-480, Basah: 480-960
-    if (value <= 0)
-        return 0;
-    if (value >= 960)
-        return 1;
-    return value / 960.0;
+  if (x <= 800)
+    return 0;
+  if (x >= 1200)
+    return 1;
+  return (x - 800) / 400.0; // Transisi dari 800 ke 1200
 }
+
+// Fungsi membership untuk hujan sedang
+float hujanSedang(float x)
+{
+  if (x <= 1200 || x >= 3000)
+    return 0;
+  if (x > 1200 && x < 2000)
+    return (x - 1200) / 800.0; // Naik dari 1200 ke 2000
+  if (x >= 2000 && x < 3000)
+    return (3000 - x) / 1000.0; // Turun dari 2000 ke 3000
+  return 0;
+}
+
+// Fungsi membership untuk hujan tinggi
+float hujanTinggi(float x)
+{
+  if (x >= 4095)
+    return 1;
+  if (x <= 3000)
+    return 0;
+  return (x - 3000) / 1095.0; // Transisi dari 3000 ke 4095
+}
+
+// Fungsi membership cahaya
+float cahayaRendah(float x)
+{
+  if (x <= 1000)
+    return 1;
+  if (x >= 2000)
+    return 0;
+  return (2000 - x) / 1000.0;
+}
+
+float cahayaTinggi(float x)
+{
+  if (x <= 2000)
+    return 0;
+  if (x >= 3000)
+    return 1;
+  return (x - 2000) / 1000.0;
+}
+
 void moveServoSmoothly(int newAngle)
 {
-    targetAngle = newAngle;
+  targetAngle = constrain(newAngle, 0, 90); // Added angle constraints
 
-    while (currentAngle != targetAngle)
+  while (currentAngle != targetAngle)
+  {
+    if (currentAngle < targetAngle)
     {
-        if (currentAngle < targetAngle)
-        {
-            currentAngle = min(currentAngle + ANGLE_STEP, targetAngle);
-        }
-        else
-        {
-            currentAngle = max(currentAngle - ANGLE_STEP, targetAngle);
-        }
-
-        servo.write(currentAngle);
-        delay(STEP_DELAY);
+      currentAngle = min(currentAngle + 2, targetAngle);
     }
+    else
+    {
+      currentAngle = max(currentAngle - 2, targetAngle);
+    }
+
+    servo.write(currentAngle);
+    delay(60);
+  }
 }
-// Fungsi defuzzifikasi Tsukamoto
-int getServoAngle(float light, float rain)
-{
-    // Fuzzifikasi
-    float CahayaTerang = keanggotaanCahaya(light);
-    float CahayaGelap = 1 - CahayaTerang;
-    float Hujan = keanggotaanAir(rain);
-    float TidakHujan = 1 - Hujan;
 
-    // Rule 1: IF Cahaya Terang AND TidakHujan THEN Sudut Besar (90°)
-    // Rule 2: IF Hujan THEN Sudut Kecil (0°)
-    // Rule 3: IF Cahaya Terang AND Hujan THEN Tunggu
-    // Rule 4: IF Cahaya Gelap AND TidakHujan THEN Pertahankan posisi terakhir
+void handleNewMessages(int numNewMessages) {
+  Serial.println("Handling new messages");
+  for (int i = 0; i < numNewMessages; i++) {
+    String chat_id = bot.messages[i].chat_id;
+    String text = bot.messages[i].text;
 
-    // Jika hujan, pindah ke 90°
-    if (Hujan > 0.5)
-    {
-        lastAngle = 90;
-        if (!notifhujan)
-        {
-            bot.sendMessage(CHAT_ID, "Cuaca Hujan, Jemuran akan di angkat..!", "");
-            notifhujan = true;
-            notifpanas = false;
-        }
-        return 90;
+    Serial.print("Pesan diterima: "); Serial.println(text);
+    Serial.print("Status waitForCommand: "); Serial.println(waitForCommand);
+
+    if (text == "/start") {
+      String welcome = "Selamat datang di Sistem Kontrol Jemuran Otomatis!\n";
+      welcome += "Gunakan perintah berikut:\n";
+      welcome += "/status - Cek status jemuran\n";
+      welcome += "angkat - Mengangkat jemuran\n";
+      bot.sendMessage(chat_id, welcome, "");
     }
-
-    // Jika cahaya terang dan tidak hujan, pindah ke 90°
-    if (CahayaTerang > 0.5 && TidakHujan > 0.5)
-    {
-        lastAngle = 0;
-
-        if (!notifpanas)
-        {
-            bot.sendMessage(CHAT_ID, "Cuaca Panas, Jemur lagi ya..!", "");
-            notifpanas = true;
-            notifhujan = false;
-        }
-        return 0;
+    else if (text == "/status") {
+      String status = "Status Jemuran:\n";
+      status += "Nilai Hujan: " + String(nilaiHujan) + "\n";
+      status += "Nilai Cahaya: " + String(nilaiCahaya) + "\n";
+      status += "Posisi Servo: " + String(currentAngle) + "°";
+      bot.sendMessage(chat_id, status, "");
     }
-
-    // Jika tidak hujan tapi cahaya gelap, pertahankan posisi terakhir
-    if (TidakHujan > 0.5 && CahayaGelap > 0.5)
-    {
-        if (!notifmendung)
-        {
-
-            bot.sendMessage(CHAT_ID, "Cuaca mendung, Apa mau di angkat jemurannya ..?", "");
-            notifmendung = true;
-            notifpanas = false;
-            notifhujan = false;
-        }
-
-        return lastAngle;
+    else if (text == "angkat") {
+      if (waitForCommand) {
+        Serial.println("Perintah 'angkat' diterima, menggerakkan servo...");
+        moveServoSmoothly(90);
+        bot.sendMessage(chat_id, "Jemuran sudah diangkat! ✅", "");
+        waitForCommand = false;
+        notifmendung = false;
+      } else {
+        Serial.println("Perintah 'angkat' diabaikan karena waitForCommand = false.");
+        bot.sendMessage(chat_id, "Tidak ada perintah menunggu. Jemuran tidak dalam kondisi mendung.", "");
+      }
     }
-
-    // Untuk kondisi lainnya, pertahankan posisi terakhir
-    return lastAngle;
+  }
 }
-void handleTelegramMessages()
+
+
+void connectWiFi()
 {
-    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-    while (numNewMessages)
-    {
-        
-        for (int i = 0; i < numNewMessages; i++)
-        {
-            String chat_id = String(bot.messages[i].chat_id);
-            String text = bot.messages[i].text;
-            if (chat_id == CHAT_ID)
-            {
-                if (text == "angkat")
-                {
-                    lastAngle = 90;
-                    bot.sendMessage(CHAT_ID, "Ok, Jemuran Sudah di angkat...!", "");
-                }
-               
-            }
-        }
-        numNewMessages = bot.getUpdates(bot.last_message_received + 1);
-    }
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20)
+  { // Added connection timeout
+    Serial.print(".");
+    delay(500);
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("\nWiFi connected");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  }
+  else
+  {
+    handleError("WiFi connection failed!");
+  }
 }
 
 void setup()
 {
-    Serial.begin(115200);
-    client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
+  Serial.begin(115200);
+  client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
 
-    analogSetAttenuation(ADC_11db);
+  analogSetAttenuation(ADC_11db);
 
-    pinMode(LED, OUTPUT);
-    safePinWrite(LED, 0);
-    pinMode(SENSOR_PIN_RAIN, INPUT);
-    pinMode(SENSOR_PIN_LIGHT, INPUT);
-    servo.setPeriodHertz(100);
-    servo.attach(SERVO_PIN);
+  pinMode(SENSOR_HUJAN, INPUT);
+  pinMode(SENSOR_CAHAYA, INPUT);
 
-    ESP32PWM::allocateTimer(0);
-    ESP32PWM::allocateTimer(1);
-    ESP32PWM::allocateTimer(2);
-    ESP32PWM::allocateTimer(3);
-    servo.write(90);
+  servo.setPeriodHertz(50);
 
-    // Attempt to connect to Wifi network:
-    Serial.print("Connecting Wifi: ");
-    Serial.println(ssid);
+  servo.attach(SERVO_PIN, 500, 2400);
+  if (!servo.attached())
+  {
+    handleError("Servo attachment failed!");
+  }
+  else
+  {
+    Serial.println("Servo attached successfully!");
+  }
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  moveServoSmoothly(90);
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
+  connectWiFi();
 
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        Serial.print(".");
-        delay(500);
-    }
-
-    Serial.println("");
-    Serial.println("WiFi connected");
-    Serial.print("IP address: ");
-    Serial.println(WiFi.localIP());
-    if (!helloMessageSent)
-    {
-        bot.sendMessage(CHAT_ID, "Hallo I'M Rain Assistant 😊", "");
-        helloMessageSent = true;
-    }
+  if (!helloMessageSent)
+  {
+    bot.sendMessage(CHAT_ID, "Sistem Jemuran Otomatis telah aktif! 🚀", "");
+    helloMessageSent = true;
+  }
 }
 
 void loop()
 {
+  nilaiHujan = 4095 - analogRead(SENSOR_HUJAN);
+  nilaiCahaya = 4095 - analogRead(SENSOR_CAHAYA);
 
-    int data_air = sensorair.readSensor();
-    int data_cahaya = sensorcahaya.readSensor();
-    data_air = data_air >> 1;
-    data_cahaya = data_cahaya >> 1;
+  // Hitung derajat keanggotaan fuzzy
+  float hujan_tinggi = hujanTinggi(nilaiHujan);
+  float hujan_sedang = hujanSedang(nilaiHujan);
+  float cahaya_rendah = cahayaRendah(nilaiCahaya);
+  float cahaya_tinggi = cahayaTinggi(nilaiCahaya);
 
-    // Hitung sudut servo menggunakan fuzzy
-    int servoAngle = getServoAngle(data_cahaya, data_air);
-    moveServoSmoothly(servoAngle);
-    Serial.println("Air: " + String(data_air) +
-                   " Cahaya: " + String(data_cahaya) +
-                   " Sudut Target: " + String(servoAngle) +
-                   " Sudut Sekarang: " + String(currentAngle));
-    if (millis() - lastTimeBotRan > 1000)
+  Serial.printf("Nilai Sensor Hujan: %.1f\nNilai Sensor Cahaya: %.1f\n", nilaiHujan, nilaiCahaya);
+  Serial.print("Kondisi Cuaca: ");
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("WiFi disconnected. Reconnecting...");
+    connectWiFi();
+  }
+
+  // Cek kondisi hujan terlebih dahulu
+  if (hujan_tinggi >= 0.5 || hujan_sedang >= 0.7)
+  {
+    Serial.println("Hujan");
+    moveServoSmoothly(90);
+    if (!notifhujan)
     {
-        handleTelegramMessages();
-        lastTimeBotRan = millis();
+      bot.sendMessage(CHAT_ID, "Hujan terdeteksi ⛈️, jemuran otomatis diangkat!", "");
+      notifhujan = true;
+      notifmendung = false;
+      notifpanas = false;
+      waitForCommand = false;
     }
-    delay(100);
+  }
+  // Jika tidak hujan, cek kondisi cahaya
+  else if (cahaya_rendah < cahaya_tinggi)
+  {
+    Serial.println("Cerah");
+    moveServoSmoothly(0);
+    if (!notifpanas)
+    {
+      bot.sendMessage(CHAT_ID, "☀️ Cuaca Cerah, Jemuran akan diturunkan!", "");
+      notifpanas = true;
+      notifhujan = false;
+      notifmendung = false;
+      waitForCommand = false;
+    }
+  }
+  else
+  {
+    Serial.println("Mendung");
+    if (!notifmendung)
+    {
+      bot.sendMessage(CHAT_ID, "Cuaca mendung 🌥️, ketik 'angkat' untuk mengangkat jemuran", "");
+      notifmendung = true;
+      notifhujan = false;
+      notifpanas = false;
+      waitForCommand = true;
+    }
+  }
+
+  if (millis() - lastTimeBotRan > BOT_CHECK_INTERVAL)
+  {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    if (numNewMessages > 0)
+    {
+      handleNewMessages(numNewMessages);
+    }
+    lastTimeBotRan = millis();
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(500));
 }
